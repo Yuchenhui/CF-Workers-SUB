@@ -420,7 +420,7 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = 
 		// 使用Promise.allSettled等待所有API请求完成，无论成功或失败
 		const responses = await Promise.allSettled(api.map(async (apiUrl) => {
 			try {
-				const response = await getUrl(request, apiUrl, appendedUserAgent, userAgentHeader);
+				const response = await getUrl(request, apiUrl, appendedUserAgent, userAgentHeader, DEBUG);
 				if (DEBUG) console.log(`[DEBUG] Response status for ${apiUrl}: ${response.status}`);
 				if (response.ok) {
 					// 获取subscription-userinfo header (不区分大小写)
@@ -545,11 +545,24 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = 
 	return [subscriptionContent, conversionUrls, aggregatedUserInfo];
 }
 
-async function getUrl(request, targetUrl, appendedUserAgent, userAgentHeader) {
+async function getUrl(request, targetUrl, appendedUserAgent, userAgentHeader, DEBUG = false) {
 	// 设置自定义 User-Agent
 	const newHeaders = new Headers(request.headers);
-	newHeaders.set("User-Agent", `${atob('djJyYXlOLzYuNDU=')} cmliu/CF-Workers-SUB ${appendedUserAgent}(${userAgentHeader})`);
+	// 为了兼容某些订阅服务，检查是否需要简单的User-Agent
+	let finalUserAgent;
+	if (targetUrl.includes('subvonehsy.onesubv.site')) {
+		// 一些订阅服务可能需要简单的User-Agent
+		finalUserAgent = appendedUserAgent;
+	} else {
+		finalUserAgent = `${atob('djJyYXlOLzYuNDU=')} cmliu/CF-Workers-SUB ${appendedUserAgent}(${userAgentHeader})`;
+	}
+	if (DEBUG) console.log(`[DEBUG] Requesting ${targetUrl} with User-Agent: ${finalUserAgent}`);
+	newHeaders.set("User-Agent", finalUserAgent);
 
+	// 添加一些头部来避免缓存
+	newHeaders.set("Cache-Control", "no-cache, no-store, must-revalidate");
+	newHeaders.set("Pragma", "no-cache");
+	
 	// 构建新的请求对象
 	const modifiedRequest = new Request(targetUrl, {
 		method: request.method,
@@ -562,7 +575,10 @@ async function getUrl(request, targetUrl, appendedUserAgent, userAgentHeader) {
 			// 允许自签名证书
 			allowUntrusted: true,
 			// 禁用证书验证
-			validateCertificate: false
+			validateCertificate: false,
+			// 禁用缓存
+			cacheTtl: 0,
+			cacheEverything: false
 		}
 	});
 
