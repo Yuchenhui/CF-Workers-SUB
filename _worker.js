@@ -122,9 +122,10 @@ export default {
 			else if (subscriptionFormat === 'base64') appendedUserAgent = 'v2rayn';
 
 			const subscriptionUrlArray = [...new Set(urls)].filter(item => item?.trim?.()); // 去重
+			if (DEBUG) console.log(`[DEBUG] Processing ${subscriptionUrlArray.length} subscription URLs:`, subscriptionUrlArray);
 			let aggregatedUserInfo = null;
 			if (subscriptionUrlArray.length > 0) {
-				const subscriptionResponse = await getSUB(subscriptionUrlArray, request, appendedUserAgent, userAgentHeader);
+				const subscriptionResponse = await getSUB(subscriptionUrlArray, request, appendedUserAgent, userAgentHeader, DEBUG);
 				// console.log(subscriptionResponse); // 移除敏感日志
 				req_data += subscriptionResponse[0].join('\n');
 				conversionUrl += "|" + subscriptionResponse[1];
@@ -190,7 +191,9 @@ export default {
 				if (aggregatedUserInfo.download > 0) userInfoParts.push(`download=${aggregatedUserInfo.download}`);
 				if (aggregatedUserInfo.total > 0) userInfoParts.push(`total=${aggregatedUserInfo.total}`);
 				if (aggregatedUserInfo.expire > 0) userInfoParts.push(`expire=${aggregatedUserInfo.expire}`);
-				responseHeaders["subscription-userinfo"] = userInfoParts.join('; ');
+				const finalUserInfo = userInfoParts.join('; ');
+				if (DEBUG) console.log('[DEBUG] Setting response header subscription-userinfo:', finalUserInfo);
+				responseHeaders["subscription-userinfo"] = finalUserInfo;
 			}
 
 			// 如果是base64格式或使用临时token，直接返回base64数据
@@ -214,6 +217,26 @@ export default {
 			try {
 				const subConverterResponse = await fetch(subConverterUrl);//订阅转换
 				if (!subConverterResponse.ok) return new Response(base64Data, { headers: responseHeaders });
+				
+				// 检查订阅转换器的响应头中是否有subscription-userinfo
+				let converterUserInfo = null;
+				for (const [key, value] of subConverterResponse.headers.entries()) {
+					if (key.toLowerCase() === 'subscription-userinfo') {
+						converterUserInfo = value;
+						if (DEBUG) console.log('[DEBUG] Subscription converter returned userinfo:', value);
+						break;
+					}
+				}
+				
+				// 如果订阅转换器返回了userinfo，但我们已经有聚合的userinfo，优先使用我们聚合的
+				// 如果我们没有聚合的userinfo，则使用转换器的
+				if (converterUserInfo && !responseHeaders["subscription-userinfo"]) {
+					if (DEBUG) console.log('[DEBUG] Using converter userinfo as we have no aggregated info');
+					responseHeaders["subscription-userinfo"] = converterUserInfo;
+				} else if (responseHeaders["subscription-userinfo"]) {
+					if (DEBUG) console.log('[DEBUG] Keeping our aggregated userinfo, ignoring converter userinfo');
+				}
+				
 				let subConverterContent = await subConverterResponse.text();
 				if (subscriptionFormat == 'clash') subConverterContent = await clashFix(subConverterContent);
 				// 只有非浏览器订阅才会返回SUBNAME
@@ -373,10 +396,11 @@ async function proxyURL(proxyURL, url) {
 	return newResponse;
 }
 
-async function getSUB(api, request, appendedUserAgent, userAgentHeader) {
+async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = false) {
 	if (!api || api.length === 0) {
 		return [];
 	} else api = [...new Set(api)]; // 去重
+	if (DEBUG) console.log(`[DEBUG] getSUB called with ${api.length} URLs:`, api);
 	let newapi = "";
 	let conversionUrls = "";
 	let invalidSubscriptions = "";
@@ -401,6 +425,7 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader) {
 				for (const [key, value] of response.headers.entries()) {
 					if (key.toLowerCase() === 'subscription-userinfo') {
 						userInfoHeader = value;
+						if (DEBUG) console.log(`[DEBUG] Found subscription-userinfo for ${apiUrl}: ${value}`);
 						break;
 					}
 				}
@@ -498,6 +523,7 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader) {
 
 	const subscriptionContent = await ADD(newapi + invalidSubscriptions); // 将处理后的内容转换为数组
 	// 返回处理后的结果，包含聚合的用户信息
+	if (DEBUG) console.log('[DEBUG] Final aggregated userinfo:', JSON.stringify(aggregatedUserInfo));
 	return [subscriptionContent, conversionUrls, aggregatedUserInfo];
 }
 
