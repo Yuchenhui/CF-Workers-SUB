@@ -418,51 +418,69 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = 
 
 	try {
 		// 使用Promise.allSettled等待所有API请求完成，无论成功或失败
-		const responses = await Promise.allSettled(api.map(apiUrl => getUrl(request, apiUrl, appendedUserAgent, userAgentHeader).then(response => {
-			if (response.ok) {
-				// 获取subscription-userinfo header (不区分大小写)
-				let userInfoHeader = null;
-				for (const [key, value] of response.headers.entries()) {
-					if (key.toLowerCase() === 'subscription-userinfo') {
-						userInfoHeader = value;
-						if (DEBUG) console.log(`[DEBUG] Found subscription-userinfo for ${apiUrl}: ${value}`);
-						break;
+		const responses = await Promise.allSettled(api.map(async (apiUrl) => {
+			try {
+				const response = await getUrl(request, apiUrl, appendedUserAgent, userAgentHeader);
+				if (DEBUG) console.log(`[DEBUG] Response status for ${apiUrl}: ${response.status}`);
+				if (response.ok) {
+					// 获取subscription-userinfo header (不区分大小写)
+					let userInfoHeader = null;
+					if (DEBUG) {
+						console.log(`[DEBUG] Headers for ${apiUrl}:`);
+						for (const [key, value] of response.headers.entries()) {
+							console.log(`[DEBUG]   ${key}: ${value}`);
+						}
 					}
-				}
-				
-				// 解析并聚合用户信息
-				if (userInfoHeader) {
-					const parts = userInfoHeader.split(';').map(p => p.trim());
-					for (const part of parts) {
-						const [key, value] = part.split('=');
-						if (key && value) {
-							const numValue = parseInt(value) || 0;
-							switch(key.toLowerCase()) {
-								case 'upload':
-									aggregatedUserInfo.upload += numValue;
-									break;
-								case 'download':
-									aggregatedUserInfo.download += numValue;
-									break;
-								case 'total':
-									aggregatedUserInfo.total += numValue;
-									break;
-								case 'expire':
-									// expire取最大值
-									if (numValue > aggregatedUserInfo.expire) {
-										aggregatedUserInfo.expire = numValue;
-									}
-									break;
+					for (const [key, value] of response.headers.entries()) {
+						if (key.toLowerCase() === 'subscription-userinfo') {
+							userInfoHeader = value;
+							if (DEBUG) console.log(`[DEBUG] Found subscription-userinfo for ${apiUrl}: ${value}`);
+							break;
+						}
+					}
+					
+					if (!userInfoHeader && DEBUG) {
+						console.log(`[DEBUG] No subscription-userinfo found for ${apiUrl}`);
+					}
+					
+					// 解析并聚合用户信息
+					if (userInfoHeader) {
+						const parts = userInfoHeader.split(';').map(p => p.trim());
+						for (const part of parts) {
+							const [key, value] = part.split('=');
+							if (key && value) {
+								const numValue = parseInt(value) || 0;
+								switch(key.toLowerCase()) {
+									case 'upload':
+										aggregatedUserInfo.upload += numValue;
+										break;
+									case 'download':
+										aggregatedUserInfo.download += numValue;
+										break;
+									case 'total':
+										aggregatedUserInfo.total += numValue;
+										break;
+									case 'expire':
+										// expire取最大值
+										if (numValue > aggregatedUserInfo.expire) {
+											aggregatedUserInfo.expire = numValue;
+										}
+										break;
+								}
 							}
 						}
 					}
+					
+					const text = await response.text();
+					return {text, response, apiUrl};
+				} else {
+					return Promise.reject(response);
 				}
-				
-				return response.text().then(text => ({text, response}));
-			} else {
-				return Promise.reject(response);
+			} catch (error) {
+				if (DEBUG) console.log(`[DEBUG] Error fetching ${apiUrl}:`, error);
+				return Promise.reject(error);
 			}
-		})));
+		}));
 
 		// 遍历所有响应
 		const modifiedResponses = responses.map((response, index) => {
@@ -486,7 +504,7 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = 
 			return {
 				status: response.status,
 				value: response.value ? response.value.text : null,
-				apiUrl: api[index] // 将原始的apiUrl添加到返回对象中
+				apiUrl: response.value ? response.value.apiUrl : api[index] // 使用返回的apiUrl或者原始apiUrl
 			};
 		});
 
