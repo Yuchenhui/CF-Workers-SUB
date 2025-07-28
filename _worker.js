@@ -31,6 +31,7 @@ export default {
 		BotToken = env.TGTOKEN || BotToken;
 		ChatID = env.TGID || ChatID;
 		TG = env.TG || TG;
+		const DEBUG = env.DEBUG === 'true'; // 添加调试开关
 		subConverter = env.SUBAPI || subConverter;
 		if (subConverter.includes("http://")) {
 			subConverter = subConverter.split("//")[1];
@@ -121,11 +122,13 @@ export default {
 			else if (subscriptionFormat === 'base64') appendedUserAgent = 'v2rayn';
 
 			const subscriptionUrlArray = [...new Set(urls)].filter(item => item?.trim?.()); // 去重
+			let aggregatedUserInfo = null;
 			if (subscriptionUrlArray.length > 0) {
 				const subscriptionResponse = await getSUB(subscriptionUrlArray, request, appendedUserAgent, userAgentHeader);
-				console.log(subscriptionResponse);
+				// console.log(subscriptionResponse); // 移除敏感日志
 				req_data += subscriptionResponse[0].join('\n');
 				conversionUrl += "|" + subscriptionResponse[1];
+				aggregatedUserInfo = subscriptionResponse[2]; // 获取聚合的用户信息
 				if (subscriptionFormat == 'base64' && !userAgent.includes('subconverter') && subscriptionResponse[1].includes('://')) {
 					subConverterUrl = `${subProtocol}://${subConverter}/sub?target=mixed&url=${encodeURIComponent(subscriptionResponse[1])}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
 					try {
@@ -135,7 +138,7 @@ export default {
 							req_data += '\n' + atob(subConverterContent);
 						}
 					} catch (error) {
-						console.log('订阅转换请回base64失败，检查订阅转换后端是否正常运行');
+						// console.log('订阅转换请回base64失败，检查订阅转换后端是否正常运行'); // 移除敏感日志
 					}
 				}
 			}
@@ -179,6 +182,16 @@ export default {
 				"Profile-Update-Interval": `${SUBUpdateTime}`,
 				"Profile-web-page-url": request.url.includes('?') ? request.url.split('?')[0] : request.url,
 			};
+			
+			// 如果有聚合的用户信息，添加到响应头
+			if (aggregatedUserInfo && (aggregatedUserInfo.upload > 0 || aggregatedUserInfo.download > 0 || aggregatedUserInfo.total > 0 || aggregatedUserInfo.expire > 0)) {
+				let userInfoParts = [];
+				if (aggregatedUserInfo.upload > 0) userInfoParts.push(`upload=${aggregatedUserInfo.upload}`);
+				if (aggregatedUserInfo.download > 0) userInfoParts.push(`download=${aggregatedUserInfo.download}`);
+				if (aggregatedUserInfo.total > 0) userInfoParts.push(`total=${aggregatedUserInfo.total}`);
+				if (aggregatedUserInfo.expire > 0) userInfoParts.push(`expire=${aggregatedUserInfo.expire}`);
+				responseHeaders["subscription-userinfo"] = userInfoParts.join('; ');
+			}
 
 			// 如果是base64格式或使用临时token，直接返回base64数据
 			if (subscriptionFormat == 'base64' || token == fakeToken) {
@@ -326,7 +339,7 @@ async function proxyURL(proxyURL, url) {
 
 	// 解析目标 URL
 	let parsedURL = new URL(fullURL);
-	console.log(parsedURL);
+	// console.log(parsedURL); // 移除URL日志
 	// 提取并可能修改 URL 组件
 	let URLProtocol = parsedURL.protocol.slice(0, -1) || 'https';
 	let URLHostname = parsedURL.hostname;
@@ -367,6 +380,13 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader) {
 	let newapi = "";
 	let conversionUrls = "";
 	let invalidSubscriptions = "";
+	// 用于聚合subscription-userinfo
+	let aggregatedUserInfo = {
+		upload: 0,
+		download: 0,
+		total: 0,
+		expire: 0
+	};
 	const controller = new AbortController(); // 创建一个AbortController实例，用于取消请求
 	const timeout = setTimeout(() => {
 		controller.abort(); // 2秒后取消所有请求
@@ -374,7 +394,50 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader) {
 
 	try {
 		// 使用Promise.allSettled等待所有API请求完成，无论成功或失败
-		const responses = await Promise.allSettled(api.map(apiUrl => getUrl(request, apiUrl, appendedUserAgent, userAgentHeader).then(response => response.ok ? response.text() : Promise.reject(response))));
+		const responses = await Promise.allSettled(api.map(apiUrl => getUrl(request, apiUrl, appendedUserAgent, userAgentHeader).then(response => {
+			if (response.ok) {
+				// 获取subscription-userinfo header (不区分大小写)
+				let userInfoHeader = null;
+				for (const [key, value] of response.headers.entries()) {
+					if (key.toLowerCase() === 'subscription-userinfo') {
+						userInfoHeader = value;
+						break;
+					}
+				}
+				
+				// 解析并聚合用户信息
+				if (userInfoHeader) {
+					const parts = userInfoHeader.split(';').map(p => p.trim());
+					for (const part of parts) {
+						const [key, value] = part.split('=');
+						if (key && value) {
+							const numValue = parseInt(value) || 0;
+							switch(key.toLowerCase()) {
+								case 'upload':
+									aggregatedUserInfo.upload += numValue;
+									break;
+								case 'download':
+									aggregatedUserInfo.download += numValue;
+									break;
+								case 'total':
+									aggregatedUserInfo.total += numValue;
+									break;
+								case 'expire':
+									// expire取最大值
+									if (numValue > aggregatedUserInfo.expire) {
+										aggregatedUserInfo.expire = numValue;
+									}
+									break;
+							}
+						}
+					}
+				}
+				
+				return response.text().then(text => ({text, response}));
+			} else {
+				return Promise.reject(response);
+			}
+		})));
 
 		// 遍历所有响应
 		const modifiedResponses = responses.map((response, index) => {
@@ -397,12 +460,12 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader) {
 			}
 			return {
 				status: response.status,
-				value: response.value,
+				value: response.value ? response.value.text : null,
 				apiUrl: api[index] // 将原始的apiUrl添加到返回对象中
 			};
 		});
 
-		console.log(modifiedResponses); // 输出修改后的响应数组
+		// console.log(modifiedResponses); // 移除敏感日志
 
 		for (const response of modifiedResponses) {
 			// 检查响应状态是否为'fulfilled'
@@ -422,7 +485,7 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader) {
 					newapi += base64Decode(content) + '\n'; // 解码并追加内容
 				} else {
 					const invalidSubscriptionLink = `trojan://CMLiussss@127.0.0.1:8888?security=tls&allowInsecure=1&type=tcp&headerType=none#%E5%BC%82%E5%B8%B8%E8%AE%A2%E9%98%85%20${response.apiUrl.split('://')[1].split('/')[0]}`;
-					console.log('异常订阅: ' + invalidSubscriptionLink);
+					// console.log('异常订阅: ' + invalidSubscriptionLink); // 移除敏感日志
 					invalidSubscriptions += `${invalidSubscriptionLink}\n`;
 				}
 			}
@@ -434,8 +497,8 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader) {
 	}
 
 	const subscriptionContent = await ADD(newapi + invalidSubscriptions); // 将处理后的内容转换为数组
-	// 返回处理后的结果
-	return [subscriptionContent, conversionUrls];
+	// 返回处理后的结果，包含聚合的用户信息
+	return [subscriptionContent, conversionUrls, aggregatedUserInfo];
 }
 
 async function getUrl(request, targetUrl, appendedUserAgent, userAgentHeader) {
@@ -459,11 +522,11 @@ async function getUrl(request, targetUrl, appendedUserAgent, userAgentHeader) {
 		}
 	});
 
-	// 输出请求的详细信息
-	console.log(`请求URL: ${targetUrl}`);
-	console.log(`请求头: ${JSON.stringify([...newHeaders])}`);
-	console.log(`请求方法: ${request.method}`);
-	console.log(`请求体: ${request.method === "GET" ? null : request.body}`);
+	// 移除敏感请求信息日志
+	// console.log(`请求URL: ${targetUrl}`);
+	// console.log(`请求头: ${JSON.stringify([...newHeaders])}`);
+	// console.log(`请求方法: ${request.method}`);
+	// console.log(`请求体: ${request.method === "GET" ? null : request.body}`);
 
 	// 发送请求并返回响应
 	return fetch(modifiedRequest);
