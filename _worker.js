@@ -183,7 +183,7 @@ export default {
 				"Profile-Update-Interval": `${SUBUpdateTime}`,
 				"Profile-web-page-url": request.url.includes('?') ? request.url.split('?')[0] : request.url,
 			};
-			
+
 			// 如果有聚合的用户信息，添加到响应头
 			if (aggregatedUserInfo && (aggregatedUserInfo.upload > 0 || aggregatedUserInfo.download > 0 || aggregatedUserInfo.total > 0 || aggregatedUserInfo.expire > 0)) {
 				let userInfoParts = [];
@@ -217,7 +217,7 @@ export default {
 			try {
 				const subConverterResponse = await fetch(subConverterUrl);//订阅转换
 				if (!subConverterResponse.ok) return new Response(base64Data, { headers: responseHeaders });
-				
+
 				// 检查订阅转换器的响应头中是否有subscription-userinfo
 				let converterUserInfo = null;
 				for (const [key, value] of subConverterResponse.headers.entries()) {
@@ -227,7 +227,7 @@ export default {
 						break;
 					}
 				}
-				
+
 				// 如果订阅转换器返回了userinfo，但我们已经有聚合的userinfo，优先使用我们聚合的
 				// 如果我们没有聚合的userinfo，则使用转换器的
 				if (converterUserInfo && !responseHeaders["subscription-userinfo"]) {
@@ -236,7 +236,7 @@ export default {
 				} else if (responseHeaders["subscription-userinfo"]) {
 					if (DEBUG) console.log('[DEBUG] Keeping our aggregated userinfo, ignoring converter userinfo');
 				}
-				
+
 				let subConverterContent = await subConverterResponse.text();
 				if (subscriptionFormat == 'clash') subConverterContent = await clashFix(subConverterContent);
 				// 只有非浏览器订阅才会返回SUBNAME
@@ -438,11 +438,11 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = 
 							break;
 						}
 					}
-					
+
 					if (!userInfoHeader && DEBUG) {
 						console.log(`[DEBUG] No subscription-userinfo found for ${apiUrl}`);
 					}
-					
+
 					// 解析并聚合用户信息
 					if (userInfoHeader) {
 						const parts = userInfoHeader.split(';').map(p => p.trim());
@@ -450,7 +450,7 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = 
 							const [key, value] = part.split('=');
 							if (key && value) {
 								const numValue = parseInt(value) || 0;
-								switch(key.toLowerCase()) {
+								switch (key.toLowerCase()) {
 									case 'upload':
 										aggregatedUserInfo.upload += numValue;
 										break;
@@ -470,9 +470,9 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = 
 							}
 						}
 					}
-					
+
 					const text = await response.text();
-					return {text, response, apiUrl};
+					return { text, response, apiUrl };
 				} else {
 					return Promise.reject(response);
 				}
@@ -546,6 +546,17 @@ async function getSUB(api, request, appendedUserAgent, userAgentHeader, DEBUG = 
 }
 
 async function getUrl(request, targetUrl, appendedUserAgent, userAgentHeader, DEBUG = false) {
+	// 为URL添加东八区时间戳
+	const chinaTime = new Date(Date.now() + 8 * 60 * 60 * 1000); // 东八区时间
+	const timestamp = Math.floor(chinaTime.getTime() / 1000);
+
+	// 检查URL是否已经有参数
+	const separator = targetUrl.includes('?') ? '&' : '?';
+	const urlWithTimestamp = `${targetUrl}${separator}timestamp=${timestamp}`;
+
+	if (DEBUG) console.log(`[DEBUG] Original URL: ${targetUrl}`);
+	if (DEBUG) console.log(`[DEBUG] URL with timestamp: ${urlWithTimestamp}`);
+
 	// 设置自定义 User-Agent
 	const newHeaders = new Headers(request.headers);
 	// 为了兼容某些订阅服务，检查是否需要简单的User-Agent
@@ -556,15 +567,15 @@ async function getUrl(request, targetUrl, appendedUserAgent, userAgentHeader, DE
 	} else {
 		finalUserAgent = `${atob('djJyYXlOLzYuNDU=')} cmliu/CF-Workers-SUB ${appendedUserAgent}(${userAgentHeader})`;
 	}
-	if (DEBUG) console.log(`[DEBUG] Requesting ${targetUrl} with User-Agent: ${finalUserAgent}`);
+	if (DEBUG) console.log(`[DEBUG] Requesting ${urlWithTimestamp} with User-Agent: ${finalUserAgent}`);
 	newHeaders.set("User-Agent", finalUserAgent);
 
 	// 添加一些头部来避免缓存
 	newHeaders.set("Cache-Control", "no-cache, no-store, must-revalidate");
 	newHeaders.set("Pragma", "no-cache");
-	
+
 	// 构建新的请求对象
-	const modifiedRequest = new Request(targetUrl, {
+	const modifiedRequest = new Request(urlWithTimestamp, {
 		method: request.method,
 		headers: newHeaders,
 		body: request.method === "GET" ? null : request.body,
